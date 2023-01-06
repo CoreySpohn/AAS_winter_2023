@@ -6,6 +6,7 @@ import astropy.constants as const
 import astropy.units as u
 import matplotlib as mpl
 import matplotlib.patches as mpatches
+import matplotlib.path as mpath
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -83,7 +84,7 @@ def create_builder():
     }
     builder.orbitfit_params = {
         "fitting_method": "rvsearch",
-        "max_planets": 3,
+        "max_planets": 5,
     }
     construction_method = {"name": "multivariate gaussian", "cov_samples": 1000}
     # construction_method = {"name": "credible interval"}
@@ -96,6 +97,8 @@ def create_builder():
     }
     director.build_orbit_fits()
     builder.probability_of_detection()
+    builder.schedule_params = {"sim_length": 3 * u.yr, "window_length": 1 * u.d}
+    builder.create_schedule()
     return builder
 
 
@@ -196,10 +199,10 @@ def earth_img_plane(ax):
     return ax
 
 
-def full_3d_plane(ax, azim=45):
-    ax.set_xlim([-9, 9])
-    ax.set_ylim([-9, 9])
-    ax.set_zlim([-9, 9])
+def full_3d_plane(ax, val, azim=45):
+    ax.set_xlim([-val, val])
+    ax.set_ylim([-val, val])
+    ax.set_zlim([-val, val])
     ax.set_xlabel("x (AU)")
     ax.set_ylabel("y (AU)")
     ax.set_zlabel("z (AU) ")
@@ -207,10 +210,10 @@ def full_3d_plane(ax, azim=45):
     return ax
 
 
-def full_img_plane(ax):
+def full_img_plane(ax, val):
     ax.set_title("Image plane")
-    ax.set_xlim([-9, 9])
-    ax.set_ylim([-9, 9])
+    ax.set_xlim([-val, val])
+    ax.set_ylim([-val, val])
     ax.set_xlabel("x (AU)")
     ax.set_ylabel("y (AU)")
     return ax
@@ -229,6 +232,19 @@ def planet_marker_size(z, all_z, base_size=5, factor=0.5):
     marker_size = base_size * (1 + factor * scaled_z)
 
     return marker_size
+
+
+def get_pop_alpha(dMags, dMag0, dMag_ub):
+    alphas = []
+    for dMag in dMags:
+        if dMag > dMag0:
+            alpha = 0
+        elif dMag < dMag_ub:
+            alpha = 1
+        else:
+            alpha = (-dMag + dMag0) / (-dMag_ub + dMag0)
+        alphas.append(alpha)
+    return np.array(alphas, ndmin=1)
 
 
 def get_planet_alpha(planet, i, dMag0, dMag_ub):
@@ -431,6 +447,35 @@ def add_IWA(ax, IWA, system, unit, annotate=False):
             arrowprops=dict(arrowstyle="<-"),
             zorder=10,
         )
+    return ax
+
+
+def make_circle(r):
+    t = np.arange(0, np.pi * 2.0, 0.01)
+    t = t.reshape((len(t), 1))
+    x = r * np.cos(t)
+    y = r * np.sin(t)
+    return np.hstack((x, y))
+
+
+def add_OWA(ax, OWA, system, unit, max_val=100):
+    if unit == u.arcsec:
+        OWA_radius = OWA.to(u.arcsec).value
+    else:
+        OWA_radius = (np.tan(OWA) * system.star.dist).to(unit).value
+    inner_OWA_vertices = make_circle(OWA_radius)
+    outer_OWA_vertices = make_circle(max_val)
+    vertices = np.concatenate((outer_OWA_vertices[::1], inner_OWA_vertices[::-1]))
+    codes = (
+        np.ones(len(inner_OWA_vertices), dtype=mpath.Path.code_type) * mpath.Path.LINETO
+    )
+    codes[0] = mpath.Path.MOVETO
+    all_codes = np.concatenate((codes, codes))
+    path = mpath.Path(vertices, all_codes)
+    patch = mpatches.PathPatch(
+        path, facecolor="grey", edgecolor="white", alpha=0.5, zorder=5
+    )
+    ax.add_patch(patch)
     return ax
 
 
@@ -881,6 +926,7 @@ def fig_2(system, specs):
 def fig_3(system, specs):
     t0 = system.planets[0].t0
     IWA = specs["observingModes"][0]["IWA"]
+    OWA = specs["observingModes"][0]["OWA"]
     system.star.mass = 1 * u.M_sun
     system.star.dist = 20 * u.pc
     t0 = system.planets[0].t0
@@ -895,7 +941,7 @@ def fig_3(system, specs):
         planet.dMags = []
         alias_planets.append(planet)
     system.planets = alias_planets
-    generate_system_pdet(system, plot_times, IWA, np.inf, 100)
+    generate_system_pdet(system, plot_times, IWA, OWA, 100)
 
     # Get z-vals
     # Set up plotting stuff
@@ -934,6 +980,7 @@ def fig_3(system, specs):
         ax_img = axes[1]
         ax_img = earth_img_plane(ax_img)
         ax_img = add_IWA(ax_img, IWA, system, u.AU)
+        ax_img = add_OWA(ax_img, OWA, system, u.AU)
 
         ax_pdet = axes[2]
         ax_pdet.set_title("Percent not obscured")
@@ -1161,7 +1208,6 @@ def fig_5(system, specs, SS):
     ax_pdet.legend(loc="upper left")
     fig.savefig("figures/pdet_per_int.png", dpi=300)
     plt.close()
-    breakpoint()
 
     for i, time in enumerate(tqdm(plot_times, desc="Figure 5")):
         fig = plt.figure(figsize=[13, 7.3])
@@ -1214,8 +1260,7 @@ def fig_6(builder):
         np.where(builder.rvdata.universe.SU.TargetList.Name == system)[0][0]
         for system in fitted_systems
     ]
-    # system_ind = 2
-    system_ind = -1
+    system_ind = 1
     system_name = fitted_systems[system_ind]
     system_sInd = fitted_sInds[system_ind]
     systems = [builder.rvdata.universe.systems[sInd] for sInd in fitted_sInds]
@@ -1269,7 +1314,7 @@ def fig_6(builder):
         ax_rv.set_title("Radial velocity")
         ax_rv = time_x_label(ax_rv, plot_times)
         ax_rv.set_xlabel("Time (yr)")
-        ax_rv.set_ylim([-5, 5])
+        ax_rv.set_ylim([-7.5, 7.5])
         ax_rv.set_ylabel("RV (m/s)")
 
         # RV data
@@ -1292,11 +1337,11 @@ def fig_6(builder):
 
         ax_3d = axes[1]
         ax_3d.set_title("Orbits in 3d")
-        ax_3d = full_3d_plane(ax_3d, azim_range[i])
+        ax_3d = full_3d_plane(ax_3d, 8, azim_range[i])
 
         ax_img = axes[2]
         ax_img.set_title("Image plane")
-        ax_img = full_img_plane(ax_img)
+        ax_img = full_img_plane(ax_img, 8)
         # ax_img = add_IWA(ax_img, IWA, system, u.AU)
 
         for planet in system.planets:
@@ -1330,8 +1375,7 @@ def fig7(builder):
         np.where(builder.rvdata.universe.SU.TargetList.Name == system)[0][0]
         for system in fitted_systems
     ]
-    # system_ind = 2
-    system_ind = -1
+    system_ind = 1
     system_name = fitted_systems[system_ind]
     system_sInd = fitted_sInds[system_ind]
     systems = [builder.rvdata.universe.systems[sInd] for sInd in fitted_sInds]
@@ -1371,31 +1415,24 @@ def fig7(builder):
             .value
         )
     cmap = plt.get_cmap("viridis")
-    cmap_vals = np.linspace(0, 1, len(pops))
+    cmap_vals = np.linspace(0.25, 0.75, len(pops))
     for i, pop in enumerate(pops):
         pop.pos = utils.calc_position_vectors(pop, plot_times)
         pop.all_z = [val[0] for val in pop.pos.z.values]
         tmp2d = copy.deepcopy(planet_scatter_kwargs_2d)
-        tmp2d["s"] = 0.1
-        tmp2d["alpha"] = 0.5
-        tmp2d["c"] = cmap(cmap_vals[i])
+        tmp2d["s"] = 0.5
+        tmp2d["alpha"] = 0.35
+        tmp2d["color"] = cmap(cmap_vals[i])
+        tmp2d["zorder"] = 0
+        tmp2d.pop("edgecolor")
         tmp3d = copy.deepcopy(planet_scatter_kwargs_3d)
-        tmp3d["s"] = 0.4
-        tmp3d["alpha"] = 0.5
-        tmp3d["c"] = cmap(cmap_vals[i])
+        tmp3d["s"] = 0.5
+        tmp3d["alpha"] = 0.35
+        tmp3d["color"] = cmap(cmap_vals[i])
+        tmp3d["zorder"] = 0
+        tmp3d.pop("edgecolor")
         pop.scatter_kwargs_2d = tmp2d
         pop.scatter_kwargs_3d = tmp3d
-        # pop.trail_kwargs = trail_kwargs
-        # pop.base_s = (
-        #     (
-        #         10
-        #         + 100
-        #         / (3 * u.M_jupiter - 0.1 * u.M_earth).decompose()
-        #         * pop.mass.decompose()
-        #     )
-        #     .decompose()
-        #     .value
-        # )
 
     # Create system from the fitted orbits
     fitted_system = copy.deepcopy(system)
@@ -1403,7 +1440,11 @@ def fig7(builder):
     for pop in pops:
         planet = pop2planet(pop, system)
         fitted_system.planets.append(planet)
-    generate_system_rv(fitted_system, plot_times)
+    fitted_rv_times = Time(
+        np.linspace(plot_times[0].jd, plot_times[-1].jd, 10 * len(plot_times)),
+        format="jd",
+    )
+    generate_system_rv(fitted_system, fitted_rv_times)
 
     # Plot work
     star_cmap = plt.get_cmap("coolwarm")
@@ -1420,7 +1461,7 @@ def fig7(builder):
         ax_rv.set_title("Radial velocity")
         ax_rv = time_x_label(ax_rv, plot_times)
         ax_rv.set_xlabel("Time (yr)")
-        ax_rv.set_ylim([-5, 5])
+        ax_rv.set_ylim([-7.5, 7.5])
         ax_rv.set_ylabel("RV (m/s)")
 
         # RV data
@@ -1440,11 +1481,12 @@ def fig7(builder):
             norm=norm,
             s=10,
         )
+        ind = np.where(fitted_rv_times <= time)[0][-1]
         ax_rv.plot(
-            plot_times.decimalyear[:i] - plot_times[0].decimalyear,
-            fitted_system.rv_df.rv.values[:i],
+            fitted_rv_times.decimalyear[:ind] - fitted_rv_times[0].decimalyear,
+            fitted_system.rv_df.rv.values[:ind],
             c=cmap(0.5),
-            alpha=0.5
+            alpha=1
             # c=fitted_system.rv_df.rv.values[:i],
             # cmap=star_cmap,
             # norm=norm,
@@ -1452,11 +1494,11 @@ def fig7(builder):
 
         ax_3d = axes[1]
         ax_3d.set_title("Orbits in 3d")
-        ax_3d = full_3d_plane(ax_3d, azim_range[i])
+        ax_3d = full_3d_plane(ax_3d, 8, azim_range[i])
 
         ax_img = axes[2]
         ax_img.set_title("Image plane")
-        ax_img = full_img_plane(ax_img)
+        ax_img = full_img_plane(ax_img, 8)
         # ax_img = add_IWA(ax_img, IWA, system, u.AU)
 
         for pop in pops:
@@ -1468,15 +1510,15 @@ def fig7(builder):
             z_val = planet.all_z[i]
             planet = get_planet_zorder(planet, time)
             ax_3d = darken_3d_background(ax_3d)
-            planet.scatter_kwargs_3d["s"] = planet_marker_size(
-                z_val, planet.all_z, base_size=planet.base_s, factor=0.25
-            )
+            # planet.scatter_kwargs_3d["s"] = planet_marker_size(
+            #     z_val, planet.all_z, base_size=planet.base_s, factor=0.25
+            # )
             ax_3d = scatter_planet(ax_3d, planet, i, unit=u.AU, projection="3d")
 
             # Image plane
-            planet.scatter_kwargs_2d["s"] = planet_marker_size(
-                z_val, planet.all_z, base_size=planet.base_s
-            )
+            # planet.scatter_kwargs_2d["s"] = planet_marker_size(
+            #     z_val, planet.all_z, base_size=planet.base_s
+            # )
             ax_img = scatter_planet(ax_img, planet, i, unit=u.AU, projection="2d")
 
         ax_img.set_aspect("equal", "box")
@@ -1486,27 +1528,496 @@ def fig7(builder):
         plt.close()
 
 
+def fig8(builder):
+    """
+    Fit with pdet
+    """
+    fitted_systems = [
+        star.replace("_", " ") for star in builder.rvdata.pdet.pops.keys()
+    ]
+    fitted_sInds = [
+        np.where(builder.rvdata.universe.SU.TargetList.Name == system)[0][0]
+        for system in fitted_systems
+    ]
+    system_ind = 1
+    system_name = fitted_systems[system_ind]
+    system_sInd = fitted_sInds[system_ind]
+    systems = [builder.rvdata.universe.systems[sInd] for sInd in fitted_sInds]
+    system = systems[system_ind]
+    pdets = builder.rvdata.pdet.pdets[system_name.replace(" ", "_")]
+    pops = builder.rvdata.pdet.pops[system_name.replace(" ", "_")]
+    rv_info = builder.rvdata.surveys[0].syst_observations[system_sInd]
+    rv_sorted = rv_info.sort_values(by="time").reset_index(drop=True)
+    # t0 = system.planets[0].t0
+    SS = builder.rvdata.pdet.SS
+    t0 = Time(pdets.time.values[0], format="datetime64")
+    tf = Time(pdets.time.values[-1], format="datetime64")
+    dt = 10
+    plot_times = Time(np.arange(t0.jd, tf.jd, dt), format="jd")
+    # rv_vals = -rv_sorted.mnvel.values
+    # rv_err = rv_sorted.errvel.values
+    azim_range = np.linspace(15, 75, len(plot_times))
+    # alias_planets = find_msini_aliases(system, system.planets[0], 25)
+
+    generate_system_rv(system, plot_times)
+    # Get z-vals
+    # Set up plotting stuff
+    system.star.scatter_kwargs = {"s": 50, "zorder": 1}
+    # system.rv_df = pd.DataFrame(
+    #     np.stack((plot_times, rv_vals), axis=1), columns=["t", "rv"]
+    # )
+    # Add planet params
+    for planet in system.planets:
+        planet.WAs = []
+        planet.dMags = []
+        planet.pos = utils.calc_position_vectors(planet, plot_times)
+        planet.all_z = [val[0] for val in planet.pos.z.values]
+        planet.scatter_kwargs_2d = copy.deepcopy(planet_scatter_kwargs_2d)
+        planet.scatter_kwargs_3d = copy.deepcopy(planet_scatter_kwargs_3d)
+        planet.trail_kwargs = trail_kwargs
+        planet.base_s = (
+            (
+                10
+                + 100
+                / (3 * u.M_jupiter - 0.1 * u.M_earth).decompose()
+                * planet.mass.decompose()
+            )
+            .decompose()
+            .value
+        )
+    IWA = builder.rvdata.pdet.SS.OpticalSystem.IWA
+    OWA = builder.rvdata.pdet.SS.OpticalSystem.OWA
+    generate_system_pdet(system, plot_times, IWA, np.inf, 25)
+    # dMag0 = builder.rvdata.pdet.SS.TargetList.saturation_dMag[system_sInd]
+    int_times = [5 * u.d, 10 * u.d, 30 * u.d, 60 * u.d, 100 * u.d]
+    dMag0s = []
+    dMag0_colors = []
+    dMag_cmap = plt.get_cmap("inferno")
+    for i, int_time in enumerate(int_times):
+        fZ = SS.ZodiacalLight.fZ0
+        fEZ = SS.ZodiacalLight.fEZ0
+        TL = SS.TargetList
+        mode = list(
+            filter(
+                lambda mode: mode["detectionMode"],
+                SS.TargetList.OpticalSystem.observingModes,
+            )
+        )[0]
+        WA = np.mean([mode["IWA"].value, mode["OWA"].value]) * u.arcsec
+        dMag = SS.OpticalSystem.calc_dMag_per_intTime(
+            int_time, TL, 0, fZ, fEZ, WA, mode
+        )
+        dMag0s.append(dMag[0])
+        dMag0_colors.append(dMag_cmap((i + 1) / len(systems)))
+    cmap = plt.get_cmap("viridis")
+    cmap_vals = np.linspace(0.25, 0.75, len(pops))
+    for i, pop in enumerate(pops):
+        pop.pos = utils.calc_position_vectors(pop, plot_times)
+        pop.all_z = [val[0] for val in pop.pos.z.values]
+        tmp2d = copy.deepcopy(planet_scatter_kwargs_2d)
+        tmp2d["s"] = 0.5
+        tmp2d["alpha"] = 0.35
+        tmp2d["color"] = cmap(cmap_vals[i])
+        tmp2d["zorder"] = -1
+        tmp2d.pop("edgecolor")
+        tmp3d = copy.deepcopy(planet_scatter_kwargs_3d)
+        tmp3d["s"] = 0.5
+        tmp3d["alpha"] = 0.35
+        tmp3d["color"] = cmap(cmap_vals[i])
+        tmp3d["zorder"] = -1
+        tmp3d.pop("edgecolor")
+        pop.scatter_kwargs_2d = tmp2d
+        pop.scatter_kwargs_3d = tmp3d
+
+    # Create system from the fitted orbits
+    fitted_system = copy.deepcopy(system)
+    fitted_system.planets = []
+    for pop in pops:
+        planet = pop2planet(pop, system)
+        fitted_system.planets.append(planet)
+    generate_system_rv(fitted_system, plot_times)
+
+    # Plot work
+    star_cmap = plt.get_cmap("coolwarm")
+    # norm = mpl.colors.Normalize(vmin=min(rv_vals), vmax=max(rv_vals))
+    for i, time in enumerate(tqdm(plot_times, desc="Figure 8")):
+        fig = plt.figure(figsize=[10, 10])
+        subfigs = fig.subfigures(nrows=2, ncols=2)
+        axes = [
+            subfigs[0, 0].add_subplot(projection="3d"),
+            subfigs[0, 1].add_subplot(),
+            subfigs[1, 0].add_subplot(),
+            subfigs[1, 1].add_subplot(),
+        ]
+        ax_3d = axes[0]
+        ax_3d.set_title("Orbits in 3d")
+        ax_3d = full_3d_plane(ax_3d, 8, azim_range[i])
+
+        ax_img = axes[1]
+        ax_img.set_title("Image plane")
+        ax_img = full_img_plane(ax_img, 8)
+        ax_img = add_IWA(ax_img, IWA, system, u.AU)
+        ax_img = add_OWA(ax_img, OWA, system, u.AU)
+
+        ax_sep = axes[2]
+        ax_sep.set_ylim([15, 30])
+        ax_sep.set_xlim([-0.5, 8])
+        ax_sep.set_xticks(np.arange(0, 8, 2.5))
+        ax_sep.set_ylabel(r"Planet-star $\Delta$mag")
+        ax_sep.set_xlabel("Planet-star separation (AU)")
+
+        ax_pdet = axes[3]
+        ax_pdet.set_title("Probability of detection")
+        ax_pdet = time_x_label(ax_pdet, plot_times)
+        ax_pdet.set_xlabel("Time (yr)")
+        ax_pdet.set_ylim([-0.05, 1.05])
+        ax_pdet.set_yticks(np.arange(0, 1.1, 0.2))
+        IWA_dist = (np.tan(IWA) * system.star.dist).to(u.AU).value
+        IWA_line = mpl.lines.Line2D([IWA_dist, IWA_dist], [15, dMag0s[-1]], color="red")
+        ax_sep.add_line(IWA_line)
+        OWA_dist = (np.tan(OWA) * system.star.dist).to(u.AU).value
+        OWA_line = mpl.lines.Line2D([OWA_dist, OWA_dist], [15, dMag0s[-1]], color="red")
+        ax_sep.add_line(OWA_line)
+        for pop in pops:
+            pop.scatter_kwargs_2d["alpha"] = 0.35
+            pop.scatter_kwargs_3d["alpha"] = 0.35
+            WA, dMag = pop.prop_for_imaging(time)
+            WA_dist = (np.tan(WA) * system.star.dist).to(u.AU).value
+            ax_sep.scatter(WA_dist, dMag, **pop.scatter_kwargs_2d)
+
+            alphas = get_pop_alpha(dMag, 25, 22)
+            pop.scatter_kwargs_2d["alpha"] = alphas
+            pop.scatter_kwargs_3d["alpha"] = alphas
+            ax_3d = scatter_pop(ax_3d, pop, i, unit=u.AU, projection="3d")
+            ax_img = scatter_pop(ax_img, pop, i, unit=u.AU, projection="2d")
+
+        dMag_line = mpl.lines.Line2D(
+            [IWA_dist, OWA_dist], [dMag0s[-1], dMag0s[-1]], color="red"
+        )
+        ax_sep.add_line(dMag_line)
+        for int_time, dMag0, dMag0_color in zip(int_times, dMag0s, dMag0_colors):
+            # dMag_line = mpl.lines.Line2D(
+            #     [IWA_dist, OWA_dist], [dMag0, dMag0], color=dMag0_color
+            # )
+            # ax_sep.add_line(dMag_line)
+            for j, pop in enumerate(pops):
+                # pdet data
+                planet_pdet = pdets.pdet.sel(planet=j).interp(
+                    time=plot_times[: i + 1].datetime,
+                    int_time=int_time,
+                )
+                tmp_pdets = np.array(planet_pdet.values, ndmin=1)
+                ax_pdet.plot(
+                    plot_times.decimalyear[: i + 1] - plot_times[0].decimalyear,
+                    tmp_pdets[: i + 1],
+                    color=pop.scatter_kwargs_2d["color"],
+                    alpha=1
+                    # alpha=0.5
+                    # + (int_time.to(u.d).value / max(int_times).to(u.d).value / 2),
+                )
+
+        for planet in system.planets:
+            # 3d
+            z_val = planet.all_z[i]
+            planet = get_planet_zorder(planet, time)
+            ax_3d = darken_3d_background(ax_3d)
+            planet.scatter_kwargs_3d["s"] = planet_marker_size(
+                z_val, planet.all_z, base_size=planet.base_s, factor=0.25
+            )
+            planet.scatter_kwargs_3d["alpha"] = get_planet_alpha(planet, i, 25, 22)
+            planet.scatter_kwargs_2d["alpha"] = get_planet_alpha(planet, i, 25, 22)
+            ax_3d = scatter_planet(ax_3d, planet, i, unit=u.AU, projection="3d")
+
+            # Image plane
+            # planet.scatter_kwargs_2d["s"] = planet_marker_size(
+            #     z_val, planet.all_z, base_size=planet.base_s
+            # )
+            ax_img = scatter_planet(ax_img, planet, i, unit=u.AU, projection="2d")
+
+            # Separation dMag plot
+            ax_sep = add_sep_plot(
+                ax_sep, planet, system, i, IWA, dMag0, u.AU, add_lines=False
+            )
+
+        ax_img.set_aspect("equal", "box")
+        # ax_3d = scatter_star(ax_3d, [0, 0, 0], system, "3d", i)
+        # ax_img = scatter_star(ax_img, [0, 0, 0], system, "2d", i)
+        fig.savefig(f"figures/fig8/fig8_{i:003d}.png", bbox_inches="tight")
+        plt.close()
+
+
+def fig9(builder):
+    """
+    Observations
+    """
+    fitted_systems = [
+        star.replace("_", " ") for star in builder.rvdata.pdet.pops.keys()
+    ]
+    fitted_sInds = [
+        np.where(builder.rvdata.universe.SU.TargetList.Name == system)[0][0]
+        for system in fitted_systems
+    ]
+    systems = [builder.rvdata.universe.systems[sInd] for sInd in fitted_sInds]
+    all_pdets = [
+        builder.rvdata.pdet.pdets[system_name.replace(" ", "_")]
+        for system_name in fitted_systems
+    ]
+    all_pops = [
+        builder.rvdata.pdet.pops[system_name.replace(" ", "_")]
+        for system_name in fitted_systems
+    ]
+    all_rv_infos = [
+        builder.rvdata.surveys[0].syst_observations[system_sInd]
+        for system_sInd in fitted_sInds
+    ]
+    all_rv_sorteds = [
+        rv_info.sort_values(by="time").reset_index(drop=True)
+        for rv_info in all_rv_infos
+    ]
+    # azim_range = np.linspace(15, 75, len(plot_times))
+    # t0 = system.planets[0].t0
+    SS = builder.rvdata.pdet.SS
+    # rv_vals = -rv_sorted.mnvel.values
+    # rv_err = rv_sorted.errvel.values
+    IWA = SS.OpticalSystem.IWA
+    OWA = SS.OpticalSystem.OWA
+    # alias_planets = find_msini_aliases(system, system.planets[0], 25)
+
+    systems_to_use = []
+    cmap = plt.get_cmap("viridis")
+    for system, pops, pdets in zip(systems, all_pops, all_pdets):
+        system_observations = [
+            obs
+            for obs in builder.rvdata.scheduler.schedule
+            if obs.star_name.replace("P", "P ") == system.star.name.replace("_", " ")
+        ]
+        if len(system_observations) == 0:
+            continue
+        systems_to_use.append(system)
+        system.forced_observations = copy.deepcopy(system_observations)
+
+        obs_times = Time(
+            np.array([obs.time.jd for obs in system_observations], ndmin=1), format="jd"
+        )
+        system.observation_times = copy.deepcopy(obs_times)
+        generate_system_rv(system, obs_times)
+        # Get z-vals
+        # Set up plotting stuff
+        system.star.scatter_kwargs = {"s": 50, "zorder": 1}
+        # system.rv_df = pd.DataFrame(
+        #     np.stack((plot_times, rv_vals), axis=1), columns=["t", "rv"]
+        # )
+        # Add planet params
+        for planet in system.planets:
+            planet.WAs = []
+            planet.dMags = []
+            planet.pos = utils.calc_position_vectors(planet, obs_times)
+            planet.all_z = [val[0] for val in planet.pos.z.values]
+            planet.scatter_kwargs_2d = copy.deepcopy(planet_scatter_kwargs_2d)
+            planet.scatter_kwargs_3d = copy.deepcopy(planet_scatter_kwargs_3d)
+            planet.trail_kwargs = trail_kwargs
+            planet.base_s = (
+                (
+                    10
+                    + 100
+                    / (3 * u.M_jupiter - 0.1 * u.M_earth).decompose()
+                    * planet.mass.decompose()
+                )
+                .decompose()
+                .value
+            )
+        generate_system_pdet(system, obs_times, IWA, OWA, 25)
+        cmap_vals = np.linspace(0.25, 0.75, len(pops))
+        for i, pop in enumerate(pops):
+            pop.pos = utils.calc_position_vectors(pop, obs_times)
+            pop.all_z = [val[0] for val in pop.pos.z.values]
+            tmp2d = copy.deepcopy(planet_scatter_kwargs_2d)
+            tmp2d["s"] = 0.5
+            tmp2d["alpha"] = 0.35
+            tmp2d["color"] = cmap(cmap_vals[i])
+            tmp2d["zorder"] = -1
+            tmp2d.pop("edgecolor")
+            tmp3d = copy.deepcopy(planet_scatter_kwargs_3d)
+            tmp3d["s"] = 0.5
+            tmp3d["alpha"] = 0.35
+            tmp3d["color"] = cmap(cmap_vals[i])
+            tmp3d["zorder"] = -1
+            tmp3d.pop("edgecolor")
+            pop.scatter_kwargs_2d = tmp2d
+            pop.scatter_kwargs_3d = tmp3d
+        system.pops = pops
+        system.pdets = pdets
+
+        # Create system from the fitted orbits
+        fitted_system = copy.deepcopy(system)
+        fitted_system.planets = []
+        for pop in pops:
+            planet = pop2planet(pop, system)
+            fitted_system.planets.append(planet)
+        generate_system_rv(fitted_system, obs_times)
+        system.fitted_system = fitted_system
+    t0 = Time(pdets.time.values[0], format="datetime64")
+    tf = Time(pdets.time.values[-1], format="datetime64")
+    dt = 10
+    pdet_times = Time(np.arange(t0.jd, tf.jd, dt), format="jd")
+    fig_ind = 0
+    detections = []
+    all_planets = []
+    for system_num, system in enumerate(tqdm(systems_to_use, desc="Figure 9")):
+        plot_times = system.observation_times
+        azim = 45
+        dMag0 = 25
+        pops = system.pops
+        for i, obs in enumerate(system.forced_observations):
+            fig_ind += 1
+            time = obs.time
+            fig = plt.figure(figsize=[10, 10])
+            subfigs = fig.subfigures(nrows=2, ncols=2)
+            axes = [
+                subfigs[0, 0].add_subplot(projection="3d"),
+                subfigs[0, 1].add_subplot(),
+                subfigs[1, 0].add_subplot(),
+                subfigs[1, 1].add_subplot(),
+            ]
+            ax_3d = axes[0]
+            ax_3d.set_title("Orbits in 3d")
+            ax_3d = full_3d_plane(ax_3d, 8, azim)
+
+            ax_img = axes[1]
+            ax_img.set_title("Image plane")
+            ax_img = full_img_plane(ax_img, 8)
+            ax_img = add_IWA(ax_img, IWA, system, u.AU)
+            ax_img = add_OWA(ax_img, OWA, system, u.AU)
+
+            ax_sep = axes[2]
+            ax_sep.set_ylim([15, 30])
+            ax_sep.set_xlim([-0.5, 8])
+            ax_sep.set_xticks(np.arange(0, 8, 2.5))
+            ax_sep.set_ylabel(r"Planet-star $\Delta$mag")
+            ax_sep.set_xlabel("Planet-star separation (AU)")
+
+            ax_pdet = axes[3]
+            ax_pdet.set_title("Probability of detection")
+            ax_pdet = time_x_label(ax_pdet, pdet_times)
+            ax_pdet.set_xlim([-0.2, 5.1])
+            ax_pdet.set_xticks(np.arange(0, 5.1, 1))
+            ax_pdet.set_xlabel("Time (yr)")
+            ax_pdet.set_ylim([-0.05, 1.05])
+            ax_pdet.set_yticks(np.arange(0, 1.1, 0.2))
+            time_line = mpl.lines.Line2D(
+                [
+                    time.decimalyear - pdet_times[0].decimalyear,
+                    time.decimalyear - pdet_times[0].decimalyear,
+                ],
+                [-1, 1],
+                color="white",
+                zorder=10,
+                alpha=0.5,
+                linewidth=5,
+            )
+            ax_pdet.add_line(time_line)
+            IWA_dist = (np.tan(IWA) * system.star.dist).to(u.AU).value
+            IWA_line = mpl.lines.Line2D([IWA_dist, IWA_dist], [15, dMag0], color="red")
+            ax_sep.add_line(IWA_line)
+            OWA_dist = (np.tan(OWA) * system.star.dist).to(u.AU).value
+            OWA_line = mpl.lines.Line2D([OWA_dist, OWA_dist], [15, dMag0], color="red")
+            ax_sep.add_line(OWA_line)
+            for pop in pops:
+                pop.scatter_kwargs_2d["alpha"] = 0.35
+                pop.scatter_kwargs_3d["alpha"] = 0.35
+                WA, dMag = pop.prop_for_imaging(time)
+                WA_dist = (np.tan(WA) * system.star.dist).to(u.AU).value
+                ax_sep.scatter(WA_dist, dMag, **pop.scatter_kwargs_2d)
+
+                alphas = get_pop_alpha(dMag, 25, 22)
+                pop.scatter_kwargs_2d["alpha"] = alphas
+                pop.scatter_kwargs_3d["alpha"] = alphas
+                ax_3d = scatter_pop(ax_3d, pop, i, unit=u.AU, projection="3d")
+                ax_img = scatter_pop(ax_img, pop, i, unit=u.AU, projection="2d")
+
+            dMag_line = mpl.lines.Line2D(
+                [IWA_dist, OWA_dist], [dMag0, dMag0], color="red"
+            )
+            ax_sep.add_line(dMag_line)
+            ax_sep.set_title(
+                f"{system.star.name}, t={time.decimalyear-pdet_times[0].decimalyear:.2f}yr"
+            )
+            for j, pop in enumerate(pops):
+                # pdet data
+                planet_pdet = system.pdets.pdet.sel(planet=j).interp(
+                    time=pdet_times.datetime,
+                    int_time=1 * u.d,
+                )
+                tmp_pdets = np.array(planet_pdet.values, ndmin=1)
+                ax_pdet.plot(
+                    pdet_times.decimalyear - pdet_times[0].decimalyear,
+                    tmp_pdets,
+                    color=pop.scatter_kwargs_2d["color"],
+                    alpha=1,
+                )
+
+            for planet_num, planet in enumerate(system.planets):
+                # 3d
+                detectable = (
+                    (planet.dMags[i] < dMag0)
+                    & (OWA > planet.WAs[i])
+                    & (planet.WAs[i] > IWA)
+                )
+                all_planets.append(f"{system_num}_{planet_num}")
+                if detectable:
+                    detections.append(f"{system_num}_{planet_num}")
+                z_val = planet.all_z[i]
+                planet = get_planet_zorder(planet, time)
+                ax_3d = darken_3d_background(ax_3d)
+                planet.scatter_kwargs_3d["s"] = planet_marker_size(
+                    z_val, planet.all_z, base_size=planet.base_s, factor=0.25
+                )
+                planet.scatter_kwargs_3d["alpha"] = get_planet_alpha(planet, i, 25, 22)
+                planet.scatter_kwargs_2d["alpha"] = get_planet_alpha(planet, i, 25, 22)
+                ax_3d = scatter_planet(ax_3d, planet, i, unit=u.AU, projection="3d")
+
+                # Image plane
+                # planet.scatter_kwargs_2d["s"] = planet_marker_size(
+                #     z_val, planet.all_z, base_size=planet.base_s
+                # )
+                ax_img = scatter_planet(ax_img, planet, i, unit=u.AU, projection="2d")
+
+                # Separation dMag plot
+                ax_sep = add_sep_plot(
+                    ax_sep, planet, system, i, IWA, dMag0, u.AU, add_lines=False
+                )
+
+            ax_img.set_aspect("equal", "box")
+            # ax_3d = scatter_star(ax_3d, [0, 0, 0], system, "3d", i)
+            # ax_img = scatter_star(ax_img, [0, 0, 0], system, "2d", i)
+            fig.savefig(f"figures/fig9/fig9_{fig_ind:003d}.png", bbox_inches="tight")
+            plt.close()
+    # total_planets = sum([len(system.planets) for system in systems_to_use])
+    print(f"Total planets: {len(np.unique(all_planets))}")
+    print(f"Total detections: {len(np.unique(detections))}")
+
+
 if __name__ == "__main__":
     font = {"size": 13}
     plt.rc("font", **font)
     plt.style.use("dark_background")
 
-    # with open("caseA.json") as f:
-    #     specs = json.loads(f.read())
-    # assert "seed" in specs.keys(), (
-    #     "For reproducibility the seed should" " not be randomized by EXOSIMS."
-    # )
+    with open("caseA.json") as f:
+        specs = json.loads(f.read())
+    assert "seed" in specs.keys(), (
+        "For reproducibility the seed should" " not be randomized by EXOSIMS."
+    )
 
-    # # # Need to use SurveySimulation if we want to have a random seed
-    # SS = get_module_from_specs(specs, "SurveySimulation")(**specs)
-    # SU = SS.SimulatedUniverse
-    # universe_params = {
-    #     "universe_type": "exosims",
-    #     "script": "caseB.json",
-    # }
-    # universe_params["missionStart"] = specs["missionStart"]
-    # universe_params["nsystems"] = 10
-    # universe = ExosimsUniverse(SU, universe_params)
+    # # Need to use SurveySimulation if we want to have a random seed
+    SS = get_module_from_specs(specs, "SurveySimulation")(**specs)
+    SU = SS.SimulatedUniverse
+    universe_params = {
+        "universe_type": "exosims",
+        "script": "caseB.json",
+    }
+    universe_params["missionStart"] = specs["missionStart"]
+    universe_params["nsystems"] = 10
+    universe = ExosimsUniverse(SU, universe_params)
 
     # system = universe.systems[0]
     # fig_1(system, specs)
@@ -1517,4 +2028,6 @@ if __name__ == "__main__":
 
     builder = create_builder()
     # fig_6(builder)
-    fig7(builder)
+    # fig7(builder)
+    # fig8(builder)
+    fig9(builder)
