@@ -270,6 +270,7 @@ def sep_axes_syst1(ax):
     ax.set_xlabel("Planet-star separation (AU)")
     return ax
 
+
 def pdet_axes_setup_1(ax, times):
     ax.set_title("Probability of detection")
     # ax = time_x_label(ax, plot_times)
@@ -299,6 +300,7 @@ def add_coro_lines(ax, IWA, OWA, dMag0, system):
     )
     ax.add_line(dMag_line)
     return ax
+
 
 def full_img_plane(ax, val):
     ax.set_title("Image plane")
