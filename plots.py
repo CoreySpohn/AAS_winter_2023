@@ -15,7 +15,7 @@ import RVtools.utils as utils
 from astropy.time import Time
 from EXOSIMS.util.deltaMag import deltaMag
 from EXOSIMS.util.get_module import get_module_from_specs
-from RVtools.builder import BaseBuilder, Director
+from RVtools.builder import BaseBuilder
 from RVtools.cosmos import Planet
 from RVtools.cosmoses.exosims import ExosimsUniverse
 from tqdm import tqdm
@@ -47,9 +47,7 @@ def create_builder():
     workers = settings["workers"]
 
     # Set up director and builder objects
-    director = Director()
     builder = BaseBuilder(cache_dir=cache_dir, workers=workers)
-    director.builder = builder
     builder.universe_params = {
         "universe_type": "exosims",
         "script": "/home/corey/Documents/github/AAS_winter_2023/caseB.json",
@@ -97,7 +95,7 @@ def create_builder():
         "start_time": mission_start,
         "end_time": mission_start + 5 * u.yr,
     }
-    director.build_orbit_fits()
+    builder.build_orbit_fits()
     builder.probability_of_detection()
     builder.schedule_params = {"sim_length": 5 * u.yr, "window_length": 1 * u.d}
     builder.create_schedule()
@@ -920,6 +918,251 @@ def fig_1(system, specs):
             for ax in row:
                 ax.clear()
 
+def fig_10(system, specs):
+    t0 = system.planets[0].t0
+    IWA = specs["observingModes"][0]["IWA"]
+    plot_times = Time(np.arange(0, 2 * 365, 1) + t0, format="mjd")
+    azim_range = np.linspace(15, 75, len(plot_times))
+    earthLike = {
+        "t0": t0,
+        "a": 1.0 * u.AU,
+        "e": 0,
+        "mass": 1 * u.M_earth,
+        "radius": 1 * u.R_earth,
+        "inc": 90 * u.deg,
+        "W": 0 * u.deg,
+        "w": 0 * u.deg,
+        "M0": 0 * u.rad,
+        "p": 0.2,
+    }
+    setup_system(system, [earthLike])
+
+    earthLike_system = copy.deepcopy(system)
+
+    massive_planet = create_mass_alias(system, system.planets[0], 1 * u.M_jupiter)
+    massive_system = copy.deepcopy(system)
+    massive_system.planets = [massive_planet]
+
+    # Generate RV data
+    generate_system_rv(earthLike_system, plot_times)
+    generate_system_rv(massive_system, plot_times)
+
+    # Get z-vals
+    earth = earthLike_system.planets[0]
+    earth.pos = utils.calc_position_vectors(earth, plot_times)
+    earthLike_system.planets[0].all_z = [val[0] for val in earth.pos.z.values]
+
+    jup = massive_system.planets[0]
+    jup.pos = utils.calc_position_vectors(jup, plot_times)
+    jup.all_z = [val[0] for val in jup.pos.z.values]
+
+    # Set up plotting stuff
+    earthLike_system.star.scatter_kwargs = {"s": 50, "zorder": 1}
+    massive_system.star.scatter_kwargs = {"s": 50, "zorder": 1}
+    jup_scatter_kwargs = {
+        "s": 50,
+        "color": "w",
+        "edgecolor": "k",
+        # "label": "Jupiter mass",
+    }
+    earth_scatter_kwargs = {
+        "s": 25,
+        "color": "w",
+        "edgecolor": "k",
+        # "label": "Earth mass",
+    }
+    massive_system.planets[0].scatter_kwargs_2d = jup_scatter_kwargs
+    massive_system.planets[0].scatter_kwargs_3d = jup_scatter_kwargs
+    earthLike_system.planets[0].scatter_kwargs_2d = earth_scatter_kwargs
+    earthLike_system.planets[0].scatter_kwargs_3d = earth_scatter_kwargs
+
+    trail_kwargs = {
+        "linestyle": "--",
+        "color": "w",
+        "alpha": 0.5,
+        "zorder": 0,
+    }
+    star_trail_kwargs = {
+        "linestyle": "--",
+        "color": "w",
+        "alpha": 0.5,
+        "zorder": 0,
+    }
+    earthLike_system.star.trail_kwargs = star_trail_kwargs
+    massive_system.star.trail_kwargs = star_trail_kwargs
+    massive_system.planets[0].trail_kwargs = trail_kwargs
+    earthLike_system.planets[0].trail_kwargs = trail_kwargs
+    earth.base_s = planet_base_size(earth)
+    earth.title = "Earth mass, edge on"
+    jup.base_s = planet_base_size(jup)
+    jup.title = "Jupiter mass, face on"
+
+    # alias_planets = find_msini_aliases(system, system.planets[0], 5)
+
+    # Plot work
+    # fig1 = plt.figure(figsize=[9, 9])
+    fig = plt.figure(figsize=[9,9])
+    ax_3d = fig.add_subplot(projection='3d')
+    # subfigs = fig1.subfigures(nrows=1, ncols=1, width_ratios=[1.5, 1, 1])
+    system = earthLike_system
+    star_cmap = plt.get_cmap("coolwarm")
+    norm = mpl.colors.Normalize(
+        vmin=min(earthLike_system.rv_df.rv.values),
+        vmax=max(earthLike_system.rv_df.rv.values),
+    )
+    for i, time in enumerate(tqdm(plot_times, desc="Figure 1")):
+        planet = system.planets[0]
+        pos = planet.pos.iloc[i]
+        xyz = [pos.x[0], pos.y[0], pos.z[0]]
+        planet = get_planet_zorder(planet, time)
+        z_val = planet.all_z[i]
+        planet.scatter_kwargs_3d["s"] = planet_marker_size(
+            z_val, planet, base_size=planet.base_s, factor=0.25
+        )
+        ax_3d = darken_3d_background(ax_3d)
+        ax_3d = scatter_star(ax_3d, xyz, system, "3d", i)
+        ax_3d = scatter_planet(ax_3d, planet, i, unit=u.AU, projection="3d")
+        ax_3d = earth_3d_plane(ax_3d, azim_range[i])
+        ax_3d.set_title("Exoplanet orbit in 3d")
+
+        fig.savefig(f"figures/fig10/fig10_{i:003d}.png")
+        ax_3d.clear()
+
+
+def fig_11(system, specs):
+    t0 = system.planets[0].t0
+    IWA = specs["observingModes"][0]["IWA"]
+    plot_times = Time(np.arange(0, 2 * 365, 1) + t0, format="mjd")
+    azim_range = np.linspace(15, 75, len(plot_times))
+    earthLike = {
+        "t0": t0,
+        "a": 1.0 * u.AU,
+        "e": 0,
+        "mass": 1 * u.M_earth,
+        "radius": 1 * u.R_earth,
+        "inc": 90 * u.deg,
+        "W": 0 * u.deg,
+        "w": 0 * u.deg,
+        "M0": 0 * u.rad,
+        "p": 0.2,
+    }
+    setup_system(system, [earthLike])
+
+    earthLike_system = copy.deepcopy(system)
+
+    # Generate RV data
+    generate_system_rv(earthLike_system, plot_times)
+    # generate_system_rv(massive_system, plot_times)
+
+    # Get z-vals
+    earth = earthLike_system.planets[0]
+    earth.pos = utils.calc_position_vectors(earth, plot_times)
+    earthLike_system.planets[0].all_z = [val[0] for val in earth.pos.z.values]
+
+    # Set up plotting stuff
+    earthLike_system.star.scatter_kwargs = {"s": 50, "zorder": 1}
+    earth_scatter_kwargs = {
+        "s": 25,
+        "color": "w",
+        "edgecolor": "k",
+        # "label": "Earth mass",
+    }
+    earthLike_system.planets[0].scatter_kwargs_2d = earth_scatter_kwargs
+    earthLike_system.planets[0].scatter_kwargs_3d = earth_scatter_kwargs
+
+    trail_kwargs = {
+        "linestyle": "--",
+        "color": "w",
+        "alpha": 0.5,
+        "zorder": 0,
+    }
+    star_trail_kwargs = {
+        "linestyle": "--",
+        "color": "w",
+        "alpha": 0.5,
+        "zorder": 0,
+    }
+    earthLike_system.star.trail_kwargs = star_trail_kwargs
+    earthLike_system.planets[0].trail_kwargs = trail_kwargs
+    earth.base_s = planet_base_size(earth)
+    earth.title = "Earth mass, edge on"
+
+    # alias_planets = find_msini_aliases(system, system.planets[0], 5)
+
+    # Plot work
+    fig1 = plt.figure(figsize=[16, 5])
+    subfigs = fig1.subfigures(ncols=3, width_ratios=[1, 1, 1.5])
+    earthLike_row = [
+        subfigs[0].add_subplot(111, projection="3d"),
+        subfigs[1].add_subplot(111),
+        subfigs[2].add_subplot(111),
+    ]
+    system = earthLike_system
+    star_cmap = plt.get_cmap("coolwarm")
+    norm = mpl.colors.Normalize(
+        vmin=min(earthLike_system.rv_df.rv.values),
+        vmax=max(earthLike_system.rv_df.rv.values),
+    )
+    for i, time in enumerate(tqdm(plot_times, desc="Figure 1")):
+        # subfigs[0].suptitle("Orbits in 3d")
+        # subfigs[2].suptitle("Radial velocity")
+        # subfigs[1].suptitle("Image plane")
+        planet = system.planets[0]
+        pos = planet.pos.iloc[i]
+        xyz = [pos.x[0], pos.y[0], pos.z[0]]
+        planet = get_planet_zorder(planet, time)
+        z_val = planet.all_z[i]
+        planet.scatter_kwargs_3d["s"] = planet_marker_size(
+            z_val, planet, base_size=planet.base_s, factor=0.25
+        )
+        ax_3d = earthLike_row[0]
+        ax_3d = darken_3d_background(ax_3d)
+        ax_3d = scatter_star(ax_3d, xyz, system, "3d", i)
+        ax_3d = scatter_planet(ax_3d, planet, i, unit=u.AU, projection="3d")
+        ax_3d = earth_3d_plane(ax_3d, azim_range[i])
+        ax_3d.set_title("Orbits in 3d")
+        # ax_3d.set_title(planet.title)
+
+        # Image plane
+        planet.scatter_kwargs_2d["s"] = planet_marker_size(
+            z_val, planet, base_size=planet.base_s, factor=0.25
+        )
+        ax_img = earthLike_row[1]
+        ax_img = scatter_star(ax_img, xyz, system, "2d", i)
+        # ax_img = scatter_planet(ax_img, planet, i, unit=u.AU, projection="2d")
+        # ax_img = add_star(ax_img, xyz, system, "2d", i)
+        ax_img = earth_img_plane(ax_img, use_xlabel=(not ax_img.get_subplotspec().is_first_row()))
+        ax_img.set_title("Image plane")
+        # ax_img.set_xlim([-1.5, 1.5])
+        # ax_img.set_ylim([-1.5, 1.5])
+        # if not ax_img.get_subplotspec().is_first_row():
+        ax_img.set_xlabel("x (AU)")
+        # ax_img.set_ylabel("y (AU)")
+        # ax_img = add_IWA(ax_img, IWA, system, u.AU)
+        # ax_img.set_title(planet.title)
+
+        # RV data
+        ax_rv = earthLike_row[2]
+        ax_rv.scatter(
+            plot_times.decimalyear[:i] - plot_times[0].decimalyear,
+            system.rv_df.rv.values[:i],
+            c=system.rv_df.rv.values[:i],
+            cmap=star_cmap,
+            norm=norm,
+        )
+        ax_rv = time_x_label(ax_rv, plot_times)
+        # if not ax_img.get_subplotspec().is_first_row():
+        ax_rv.set_xlabel("Time (yr)")
+        # ax_rv.set_ylim([-0.1, 0.1])
+        ax_rv = lims_and_ticks(ax_rv, 'y', -0.1, 0.1, 0.05, 0)
+        ax_rv.set_ylabel("RV (m/s)")
+        ax_rv.set_title("Radial velocity")
+        # ax_rv.set_title(planet.title)
+
+        fig1.savefig(f"figures/fig11/fig11_{i:003d}.png")
+        for row in [earthLike_row]:
+            for ax in row:
+                ax.clear()
 
 def fig_2(system, specs):
     t0 = system.planets[0].t0
@@ -2132,10 +2375,12 @@ if __name__ == "__main__":
     universe = ExosimsUniverse(SU, universe_params)
 
     system = universe.systems[0]
-    fig_1(system, specs)
-    fig_2(universe.systems[1], specs)
-    fig_3(universe.systems[2], specs)
-    fig_4(universe.systems[3], specs)
+    # fig_1(system, specs)
+    # fig_10(system, specs)
+    fig_11(system, specs)
+    # fig_2(universe.systems[1], specs)
+    # fig_3(universe.systems[2], specs)
+    # fig_4(universe.systems[3], specs)
     # fig_5(universe.systems[4], specs, SS)
 
     # builder_path = Path('builder.p')
@@ -2145,9 +2390,9 @@ if __name__ == "__main__":
     # else:
     #     with open(builder_path, 'wb') as f:
     #         dill.dump(builder, f)
-    builder = create_builder()
+    # builder = create_builder()
 
-    fig_6(builder)
-    fig7(builder)
-    fig8(builder)
-    fig9(builder)
+    # fig_6(builder)
+    # fig7(builder)
+    # fig8(builder)
+    # fig9(builder)
